@@ -78,3 +78,116 @@ opt.pahse = 'val'
 val_data_loader = CreateDataLoader(opt)
 val_dataset = val_data_loader.load_data()
 
+## define models
+#1---256x256 stage
+#2---128x128 stage
+#3---64x64 stage
+
+GA = nets.define_G(input_nc=3,output_nc=3,ngf=64,
+                    which_model_netG='resnet_9blocks', gpu_ids=[0],init_type='normal')
+GB = nets.define_G(input_nc=3,output_nc=3,ngf=64,
+                    which_model_netG='resnet_9blocks', gpu_ids=[0], init_type='normal')
+DA1 = nets.define_D(input_nc=2* 3, ndf=64,
+                    which_model_netD='n_layers',gpu_ids=[0],init_type='normal', n_layers_D=1)
+DA2 = nets.define_D(input_nc=2* 3, ndf=64,
+                    which_model_netD='n_layers',gpu_ids=[0],init_type='normal', n_layers_D=1)
+DA3 = nets.define_D(input_nc=2* 3, ndf=64,
+                    which_model_netD='n_layers',gpu_ids=[0],init_type='normal', n_layers_D=1)
+DB1 = nets.define_D(input_nc=2* 3, ndf=64,
+                    which_model_netD='n_layers',gpu_ids=[0],init_type='normal', n_layers_D=1)
+DB2 = nets.define_D(input_nc=2* 3, ndf=64,
+                    which_model_netD='n_layers',gpu_ids=[0],init_type='normal', n_layers_D=1)
+DB3 = nets.define_D(input_nc=2* 3, ndf=64,
+                    which_model_netD='n_layers',gpu_ids=[0],init_type='normal', n_layers_D=1)
+
+## resume training
+idx = 0
+if opt.resume:
+    print('resume')
+    gapath = os.path.join(opt.ckpt_path, opt.resume + '_ga.pth')
+    gbpath = os.path.join(opt.ckpt_path, opt.resume + '_gb.pth')
+    da1path = os.path.join(opt.ckpt_path, opt.resume + '_da1.pth')
+    da2path = os.path.join(opt.ckpt_path, opt.resume + '_da2.pth')
+    da3path = os.path.join(opt.ckpt_path, opt.resume + '_da3.pth')
+    db1path = os.path.join(opt.ckpt_path, opt.resume + '_db1.pth')
+    db2path = os.path.join(opt.ckpt_path, opt.resume + '_db2.pth')
+    db3path = os.path.join(opt.ckpt_path, opt.resume + '_db3.pth')
+
+    idx = split = opt.resume.split('_')[1]
+    if not any([os.path.isfile(gapath), os.path.isfile(gbpath),
+                os.path.isfile(da1path), os.path.isfile(db1path),
+                os.path.isfile(da2path), os.path.isfile(db2path),
+                os.path.isfile(da3path), os.path.isfile(db3path)]):
+        print("=> missing checkpoint files at '{}'".format(opt.resume))
+
+    else:
+        print("=> loading checkpoint '{}'".format(opt.resume))
+
+        # g.load_state_dict(torch.load(os.path.join(args.ckpt_path, args.g_snapshot)))
+        GA.load_state_dict(torch.load(gapath))
+        GB.load_state_dict(torch.load(gbpath))
+        DA1.load_state_dict(torch.load(da1path))
+        DA2.load_state_dict(torch.load(da2path))
+        DA3.load_state_dict(torch.load(da3path))
+        DB1.load_state_dict(torch.load(db1path))
+        DB2.load_state_dict(torch.load(db2path))
+        DB3.load_state_dict(torch.load(db3path))
+
+        opt.ckpt_path = os.path.join(opt.ckpt_path, 'resume_'+ idx)
+        if not os.path.exists(opt.ckpt_path):
+            os.makedirs(opt.ckpt_path)
+
+GA = GA.cuda()
+GB = GB.cuda()
+DA1 = DA1.cuda()
+DA2 = DA2.cuda()
+DA3 = DA3.cuda()
+DB1 = DB1.cuda()
+DB2 = DB2.cuda()
+DB3 = DB3.cuda()
+
+optimizer_G = torch.optim.Adam(itertools.chain(GA.parameters(), GB.parameters()),
+                                                lr=opt.lr, betas=(opt.beta1, 0.999))
+
+optimizer_D_A1 = torch.optim.Adam(DA1.parameters(), lr=opt.lr, betas=(opt.beta1, 0.999))
+optimizer_D_B1 = torch.optim.Adam(DB1.parameters(), lr=opt.lr, betas=(opt.beta1, 0.999))
+
+optimizer_D_A2 = torch.optim.Adam(DA2.parameters(), lr=opt.lr, betas=(opt.beta1, 0.999))
+optimizer_D_B2 = torch.optim.Adam(DB2.parameters(), lr=opt.lr, betas=(opt.beta1, 0.999))
+
+optimizer_D_A3 = torch.optim.Adam(DA3.parameters(), lr=opt.lr, betas=(opt.beta1, 0.999))
+optimizer_D_B3 = torch.optim.Adam(DB3.parameters(), lr=opt.lr, betas=(opt.beta1, 0.999))
+
+fake_A_pool = ImagePool(50)
+fake_B_pool = ImagePool(50)
+fake_A64_pool = ImagePool(50)
+fake_B64_pool = ImagePool(50)
+fake_A128_pool = ImagePool(50)
+fake_B128_pool = ImagePool(50)
+
+Tensor = torch.cuda.FloatTensor if opt.gpu_ids else torch.Tensor
+
+##define losses
+criterionGAN = nets.GANLoss(use_lsgan=not opt.no_lsgan, tensor=Tensor)
+criterionCycle = torch.nn.L1Loss()
+criterionIdt = torch.nn.L1Loss()
+criterionRec = torch.nn.L1Loss()
+criterionPatch = nets.patchloss()
+
+scale128_transform = transforms.Compose([
+                                    transforms.ToPILImage(),
+                                    transforms.Resize((128,128),interpolation=PIL.Image.BICUBIC),
+                                    transforms.ToTensor(),
+                                    transforms.Normalize((0.5, 0.5, 0.5),
+                                                         (0.5, 0.5, 0.5))])
+scale64_transform = transforms.Compose([
+                                    transforms.ToPILImage(),
+                                    transforms.Resize((64,64),interpolation=PIL.Image.BICUBIC),
+                                    transforms.ToTensor(),
+                                    transforms.Normalize((0.5, 0.5, 0.5),
+                                                         (0.5, 0.5, 0.5))])
+
+seg_transform = transforms.Compose([
+                                    transforms.ToTensor(),
+                                    transforms.Normalize((0.5, 0.5, 0.5),
+                                                         (0.5, 0.5, 0.5))])
